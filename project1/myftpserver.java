@@ -14,6 +14,7 @@ public class myftpserver{
     private DataInputStream dataIn = null;
     private DataOutputStream dataOut = null;
     private Path currentDirectory;
+    private Path rootDirectory;
 
     private synchronized void serverResponse(String msg){
         try {
@@ -45,36 +46,44 @@ public class myftpserver{
     public myftpserver(int port) {
         try{
             ss = new ServerSocket(port);
+            this.rootDirectory = Paths.get(System.getProperty("user.dir"));
 
-            s = ss.accept();
-
-            // Use DataInputStream/DataOutputStream consistently
-            dataIn = new DataInputStream(new BufferedInputStream(s.getInputStream()));
-            dataOut = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
-
-            this.currentDirectory = Paths.get(System.getProperty("user.dir"));
-            //ask prof about quit, the program should quit after all threads are finished proccessing?
-            //ensure clientMsg actually has args or return statement about false command
+            //keeps socket open even when client disconnects
             while(true){
-                String clientMsg = readLine();
-                if(clientMsg == null || clientMsg.equals("quit")){
-                    break;
+                System.out.println("Waiting for client connection...");
+                s = ss.accept();
+                System.out.println("Client connected");
+
+                
+                dataIn = new DataInputStream(new BufferedInputStream(s.getInputStream()));
+                dataOut = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
+
+                
+                this.currentDirectory = rootDirectory;
+
+                //ensure clientMsg actually has args or return statement about false command
+                while(true){
+                    String clientMsg = readLine();
+                    if(clientMsg == null || clientMsg.equals("quit")){
+                        break;
+                    }
+                    System.out.println("Received command: " + clientMsg);
+                    String[] commandArgs = clientMsg.split(" ");
+                    if(commandArgs.length == 0 || commandArgs[0].isEmpty()){
+                        serverResponse("Error with the formatting of the command");
+
+                        continue;
+                    }
+                    clientCommandHandler clientCommand = new clientCommandHandler(commandArgs[0],commandArgs);
+                    Thread clientCommandThread = new Thread(clientCommand);
+                    clientCommandThread.start();
                 }
-                System.out.println("Received command: " + clientMsg);
-                String[] commandArgs = clientMsg.split(" ");
-                if(commandArgs.length == 0 || commandArgs[0].isEmpty()){
-                    serverResponse("Error with the formatting of the command");
-                    continue;
-                }
-                clientCommandHandler clientCommand = new clientCommandHandler(commandArgs[0],commandArgs);
-                Thread clientCommandThread = new Thread(clientCommand);
-                clientCommandThread.start();
+                //close client connection, then loop back to accept new client
+                System.out.println("Client disconnected");
+                dataIn.close();
+                dataOut.close();
+                s.close();
             }
-            //close all buffers,streams,and sockets in a method for cleaner code
-            dataIn.close();
-            dataOut.close();
-            s.close();
-            
         }
         catch (IOException e){
             System.out.println(e);
@@ -227,26 +236,24 @@ public class myftpserver{
             }
         }
         //ask professor about this one (subdirectory or given full absolute path?)
-        //handle it synchronously across threads? what if multiple threads call same cd command
-        //Changes current directory to remote_directory_name if found
         //Prints response to client depending if dir exists or not
         //handles both remote_directory_name & .. (parent directory)
+        //Need to handle edge case where user tries to exceed root directory
         private void cd(String remote_directory_name){
-            if(remote_directory_name.equals("..")){
+            if(remote_directory_name.equals("..") && !currentDirectory.equals(rootDirectory)){
                 Path parentPath = currentDirectory.getParent();
-                if (parentPath == null){
-                    serverResponse("At root directory " + currentDirectory.toString());
-                    return;
-                }
                 if (Files.exists(parentPath) && Files.isDirectory(parentPath)){
                 currentDirectory = parentPath;
                 serverResponse("Changed current working directory to " + currentDirectory.toString());
             } else{
-                serverResponse("Remote Directory not found");
+                serverResponse("Already at root directory, cannot go further");
             }
             }else{
             Path desiredPath = currentDirectory.resolve(remote_directory_name).normalize();
-
+            if(!desiredPath.getParent().equals(currentDirectory)){
+                serverResponse("Can only cd into subdirectories of current working directory");
+                return;
+            }
             if (Files.exists(desiredPath) && Files.isDirectory(desiredPath)){
                 currentDirectory = desiredPath;
                 serverResponse("Changed current working directory to " + currentDirectory.toString());
@@ -264,7 +271,7 @@ public class myftpserver{
                 return;
             }
             if(directory.mkdirs()){
-                serverResponse("Directory created successfully a " + directory.getAbsolutePath());
+                serverResponse("Directory created successfully at " + directory.getAbsolutePath());
             } else{
                 serverResponse("Directory creation failed or the directory already exists");
             }

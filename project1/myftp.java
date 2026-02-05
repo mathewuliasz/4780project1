@@ -15,7 +15,6 @@ public class myftp{
             s = new Socket(addr, port);
             System.out.println("Connected");
 
-            // Use DataInputStream/DataOutputStream consistently for all socket I/O
             dataIn = new DataInputStream(new BufferedInputStream(s.getInputStream()));
             dataOut = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
 
