@@ -6,11 +6,16 @@ import java.util.List;
 
 public class Participant {
 
-    //participant id, file, port, id addr & port of coordinator in a .txt file
+    public enum State {
+        UNREGISTERED, ONLINE, OFFLINE
+    }
+
+    // participant id, file, port, id addr & port of coordinator in a .txt file
     private int id;
     private Path filePath;
     private String coordinatorName;
     private int coordinatorPort;
+    private State state = State.UNREGISTERED;
     private BufferedReader clientCommandInput = null;
     private InetAddress localHost = null;
     private Thread bThread;
@@ -23,9 +28,11 @@ public class Participant {
         this.coordinatorPort = coordinatorPort;
         try {
             clientCommandInput = new BufferedReader(new InputStreamReader(System.in));
-            localHost = InetAddress.getLocalHost();
-        } catch (UnknownHostException e) {
-            System.out.println(e);
+            Socket probe = new Socket(coordinatorName, coordinatorPort);
+            localHost = probe.getLocalAddress();
+            probe.close();
+        } catch (IOException e) {
+            System.out.println("Could not resolve local address via coordinator: " + e);
             return;
         }
         String command = "";
@@ -38,32 +45,66 @@ public class Participant {
                 String[] commandArgs = command.split(" ");
                 String cmd = commandArgs[0].toLowerCase();
 
-                //can do a switch statement to simplify
+                // can do a switch statement to simplify
                 switch (cmd) {
                     case "msend":
-                        sendToCoordinator("msend " + id + " " + commandArgs[1]);
+                        if (commandArgs.length < 2) { // length check
+                            System.out.println("Usage: msend <message>");
+                            break;
+                        }
+                        if (state != State.ONLINE) {
+                            System.out.println("Cannot msend: not currently registered and online.");
+                            break;
+                        }
+                        String msgContent = command.substring("msend ".length()).trim();
+                        sendToCoordinator("msend " + id + " " + msgContent);
                         break;
                     case "reconnect":
+                        if (state != State.OFFLINE) {
+                            System.out.println("Cannot reconnect: not currently disconnected.");
+                            break;
+                        }
                         int reconPort = Integer.parseInt(commandArgs[1]);
-                        //thread-B has to be operational before sending the message to the coordinator
+                        // thread-B has to be operational before sending the message to the coordinator
                         startReceiver(reconPort);
                         sendToCoordinator("reconnect " + id + " " + localHost.getHostAddress() + " " + reconPort);
+                        state = State.ONLINE;
                         break;
                     case "disconnect":
+                        if (state != State.ONLINE) {
+                            System.out.println("Cannot disconnect: not currently online.");
+                            break;
+                        }
                         sendToCoordinator("disconnect " + id);
                         stopReceiver();
+                        state = State.OFFLINE;
                         break;
                     case "deregister":
+                        if (state == State.UNREGISTERED) {
+                            System.out.println("Cannot deregister: not currently registered.");
+                            break;
+                        }
                         sendToCoordinator("deregister " + id);
                         stopReceiver();
+                        state = State.UNREGISTERED;
                         break;
                     case "register":
+                        if (state != State.UNREGISTERED) {
+                            System.out.println("Cannot register: already registered. Deregister first.");
+                            break;
+                        }
                         int regPort = Integer.parseInt(commandArgs[1]);
-                        //thread-B has to be operational before sending the message to the coordinator
+                        // thread-B has to be operational before sending the message to the coordinator
                         startReceiver(regPort);
                         sendToCoordinator("register " + id + " " + localHost.getHostAddress() + " " + regPort);
+                        state = State.ONLINE;
                         break;
                     case "quit":
+                        // auto deregister the participant on quit
+                        if (state == State.ONLINE || state == State.OFFLINE) {
+                            sendToCoordinator("deregister " + id);
+                            stopReceiver();
+                        }
                         break;
                     default:
                         System.out.println("Unknown command: " + cmd);
@@ -81,7 +122,8 @@ public class Participant {
         }
     }
 
-    //opens a new connection to coordinator, sends command, waits for ACK, then closes
+    // opens a new connection to coordinator, sends command, waits for ACK, then
+    // closes
     private void sendToCoordinator(String message) {
         try {
             Socket s = new Socket(coordinatorName, coordinatorPort);
@@ -89,7 +131,7 @@ public class Participant {
             DataInputStream dataIn = new DataInputStream(new BufferedInputStream(s.getInputStream()));
             dataOut.writeUTF(message);
             dataOut.flush();
-            //wait for acknowledgement from coordinator before unblocking
+            // wait for acknowledgement from coordinator before unblocking
             String ack = dataIn.readUTF();
             System.out.println(ack);
             dataIn.close();
@@ -122,7 +164,7 @@ public class Participant {
         }
     }
 
-    //separate thread handles recv msgs and logging them
+    // separate thread handles recv msgs and logging them
     public class ReceiveMulticastMessages implements Runnable {
 
         private ServerSocket serverSocket = null;
@@ -138,12 +180,17 @@ public class Participant {
 
         @Override
         public void run() {
+            if (serverSocket == null) {
+                System.out.println("Receiver failed to start: serverSocket is null.");
+                return;
+            }
             try {
                 while (running) {
                     Socket t = serverSocket.accept();
                     DataInputStream dataIn = new DataInputStream(new BufferedInputStream(t.getInputStream()));
                     String msg = dataIn.readUTF();
-                    Files.write(filePath, (msg + "\n").getBytes(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                    Files.write(filePath, (msg + "\n").getBytes(), StandardOpenOption.CREATE,
+                            StandardOpenOption.APPEND);
                     dataIn.close();
                     t.close();
                 }
@@ -166,44 +213,65 @@ public class Participant {
         }
     }
 
-    /* Multicast [message] to all current members. Note that
-[message] is an alpha-numeric string (e.g., UGACSRocks). The participant sends the message to
-the coordinator and unblocks after an acknowledgement is received. */
-
- /* Participant indicates to the coordinator that it is
-online and it will specify the IP address and port number where its thread-B will receive
-multicast messages (thread-B has to be operational before sending the message to the
-coordinator).*/
-
- /*Participant indicates to the coordinator that it is temporarily going
-offline. The coordinator will have to send it messages sent during disconnection (subject to
-temporal constraint). Thread-B will relinquish the port and may become dormant or die.
+    /*
+     * Multicast [message] to all current members. Note that
+     * [message] is an alpha-numeric string (e.g., UGACSRocks). The participant
+     * sends the message to
+     * the coordinator and unblocks after an acknowledgement is received.
      */
 
- /*
-    Participant indicates to the coordinator that it is no longer belongs
-to the multicast group. Please note that this is different than being disconnected. A participant
-that deregisters, may register again. But it will not get any messages that were sent since its
-deregistration (i.e., it will be treated as a new entrant). Thread-B will relinquish the port and
-may become dormant or die.*/
+    /*
+     * Participant indicates to the coordinator that it is
+     * online and it will specify the IP address and port number where its thread-B
+     * will receive
+     * multicast messages (thread-B has to be operational before sending the message
+     * to the
+     * coordinator).
+     */
 
- /* Participant has to register with the coordinator
-specifying its ID, IP address and port number where its thread-B will receive multicast messages
-(thread-B has to be operational before sending the message to the coordinator). Upon
-successful registration, the participant is a member of the multicast group and will begin
-receiving messages.
+    /*
+     * Participant indicates to the coordinator that it is temporarily going
+     * offline. The coordinator will have to send it messages sent during
+     * disconnection (subject to
+     * temporal constraint). Thread-B will relinquish the port and may become
+     * dormant or die.
+     */
+
+    /*
+     * Participant indicates to the coordinator that it is no longer belongs
+     * to the multicast group. Please note that this is different than being
+     * disconnected. A participant
+     * that deregisters, may register again. But it will not get any messages that
+     * were sent since its
+     * deregistration (i.e., it will be treated as a new entrant). Thread-B will
+     * relinquish the port and
+     * may become dormant or die.
+     */
+
+    /*
+     * Participant has to register with the coordinator
+     * specifying its ID, IP address and port number where its thread-B will receive
+     * multicast messages
+     * (thread-B has to be operational before sending the message to the
+     * coordinator). Upon
+     * successful registration, the participant is a member of the multicast group
+     * and will begin
+     * receiving messages.
      */
     public static void main(String[] args) {
-        //gets PP3-participant-conf.txt - extract each line and assign vals to declared attributes
+        // gets PP3-participant-conf.txt - extract each line and assign vals to declared
+        // attributes
         Path participantDescriptionFile = Paths.get(args[0]);
         try {
             if (!Files.exists(participantDescriptionFile)) {
                 System.out.println("The required participant descriptor file cannot be found.");
             } else {
-                System.out.println("Extracting the participant ID, Msg storing file name, and coordinator machine name & port.");
+                System.out.println(
+                        "Extracting the participant ID, Msg storing file name, and coordinator machine name & port.");
                 List<String> fileLines = Files.readAllLines(participantDescriptionFile);
                 String[] coordinatorDetails = fileLines.get(2).split(" ");
-                Participant newParticipant = new Participant(Integer.parseInt(fileLines.get(0)), fileLines.get(1), coordinatorDetails[0], Integer.parseInt(coordinatorDetails[1]));
+                Participant newParticipant = new Participant(Integer.parseInt(fileLines.get(0)), fileLines.get(1),
+                        coordinatorDetails[0], Integer.parseInt(coordinatorDetails[1]));
             }
         } catch (IOException e) {
             System.out.println("An error occured.");
