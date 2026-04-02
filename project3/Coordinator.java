@@ -44,7 +44,7 @@ public class Coordinator {
     private final int port;
     private final long tdMillis; // persistence threshold in ms
 
-    // shared state — all access via synchronized methods or concurrent collections
+    // shared state... all access via synchronized methods or concurrent collections
     private final Map<Integer, Member> members = new ConcurrentHashMap<>();
     private final List<MulticastMessage> messageLog = new CopyOnWriteArrayList<>();
     private int nextMsgId = 0;
@@ -55,7 +55,7 @@ public class Coordinator {
     }
 
     public void start() {
-        // thread pool capped at 8 worker threads as per spec guidance (< 10)
+        //capped at 8 worker threads
         ExecutorService pool = Executors.newFixedThreadPool(8);
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("Coordinator listening on port " + port + " (td=" + (tdMillis / 1000) + "s)");
@@ -70,16 +70,11 @@ public class Coordinator {
         }
     }
 
-    // request handler (runs in thread pool)
+    // request handler
     private void handleRequest(Socket socket) {
         try {
+            socket.setSoTimeout(5000);
             DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-            // guard against empty probe connections
-            if (in.available() == 0) {
-                socket.close();
-                return;
-            }
-
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
 
             String message = in.readUTF();
@@ -100,7 +95,7 @@ public class Coordinator {
                     handleReconnect(parts, out);
                     break;
                 case "msend":
-                    handleMsend(parts, out, socket.getInetAddress());
+                    handleMsend(message, out);
                     break;
                 default:
                     out.writeUTF("ERROR unknown command: " + cmd);
@@ -127,7 +122,7 @@ public class Coordinator {
             members.put(id, new Member(id, ip, port));
             System.out.println("Registered new participant " + id);
         } else {
-            // re-registering after deregister — treat as new entrant, clear history
+            // re-registering after deregister/clear history
             m.ip = ip;
             m.port = port;
             m.state = Participant.State.ONLINE;
@@ -137,7 +132,6 @@ public class Coordinator {
         }
         out.writeUTF("ACK register " + id);
         out.flush();
-        // no catch-up messages — new part gets nothing from before registration
     }
 
     // deregister <id>
@@ -196,10 +190,6 @@ public class Coordinator {
 
             System.out.println("Participant " + id + " reconnected");
 
-            // collect messages to deliver:
-            // - sent after disconnectTime (don't re-send things they already got)
-            // - sent within the past td ms (temporal)
-            // - not already delivered to this member
             long cutoff = System.currentTimeMillis() - tdMillis;
             toDeliver = new ArrayList<>();
             for (MulticastMessage msg : messageLog) {
@@ -218,9 +208,23 @@ public class Coordinator {
     }
 
     // msend <senderId> <message>
-    private void handleMsend(String[] parts, DataOutputStream out, InetAddress senderAddr) throws IOException {
-        int senderId = Integer.parseInt(parts[1]);
-        String content = parts[2];
+    private void handleMsend(String message, DataOutputStream out) throws IOException {
+        String[] parts = message.split(" ", 3);
+        if (parts.length < 3 || parts[2].trim().isEmpty()) {
+            out.writeUTF("ERROR usage: msend <senderId> <message>");
+            out.flush();
+            return;
+        }
+
+        int senderId;
+        try {
+            senderId = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException e) {
+            out.writeUTF("ERROR invalid senderId: " + parts[1]);
+            out.flush();
+            return;
+        }
+        String content = parts[2].trim();
 
         MulticastMessage msg;
         List<Member> onlineMembers;
@@ -254,31 +258,22 @@ public class Coordinator {
     private void deliverToParticipant(Member m, MulticastMessage msg) {
         if (m == null)
             return;
-        // guard against duplicate delivery
         if (!m.deliveredMsgIds.add(msg.id))
             return;
 
         try {
             Socket s = new Socket(m.ip, m.port);
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
-            // Format: "MSG <msgId> <senderId> <content>"
+            // MSG <msgId> <senderId> <content>
             out.writeUTF("MSG " + msg.id + " " + msg.senderId + " " + msg.content);
             out.flush();
             out.close();
             s.close();
             System.out.println("Delivered msgId=" + msg.id + " to participant " + m.id);
         } catch (IOException e) {
-            // delivery failed — remove from deliveredMsgIds so it can be removed on
-            // reconnect
             m.deliveredMsgIds.remove(msg.id);
             System.out.println("Failed to deliver msgId=" + msg.id + " to participant " + m.id + ": " + e);
         }
-    }
-
-    // purge messages older than td (dont know if this works)
-    private synchronized void purgeOldMessages() {
-        long cutoff = System.currentTimeMillis() - tdMillis;
-        messageLog.removeIf(msg -> msg.timestamp < cutoff);
     }
 
     public static void main(String[] args) {

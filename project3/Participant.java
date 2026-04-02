@@ -28,11 +28,9 @@ public class Participant {
         this.coordinatorPort = coordinatorPort;
         try {
             clientCommandInput = new BufferedReader(new InputStreamReader(System.in));
-            Socket probe = new Socket(coordinatorName, coordinatorPort);
-            localHost = probe.getLocalAddress();
-            probe.close();
+            localHost = InetAddress.getLocalHost();
         } catch (IOException e) {
-            System.out.println("Could not resolve local address via coordinator: " + e);
+            System.out.println("Could not resolve local address: " + e);
             return;
         }
         String command = "";
@@ -45,7 +43,6 @@ public class Participant {
                 String[] commandArgs = command.split(" ");
                 String cmd = commandArgs[0].toLowerCase();
 
-                // can do a switch statement to simplify
                 switch (cmd) {
                     case "msend":
                         if (commandArgs.length < 2) { // length check
@@ -127,6 +124,7 @@ public class Participant {
     private void sendToCoordinator(String message) {
         try {
             Socket s = new Socket(coordinatorName, coordinatorPort);
+            s.setSoTimeout(10000); // 10s timeout so main thread doesn't block forever
             DataOutputStream dataOut = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
             DataInputStream dataIn = new DataInputStream(new BufferedInputStream(s.getInputStream()));
             dataOut.writeUTF(message);
@@ -213,53 +211,8 @@ public class Participant {
         }
     }
 
-    /*
-     * Multicast [message] to all current members. Note that
-     * [message] is an alpha-numeric string (e.g., UGACSRocks). The participant
-     * sends the message to
-     * the coordinator and unblocks after an acknowledgement is received.
-     */
-
-    /*
-     * Participant indicates to the coordinator that it is
-     * online and it will specify the IP address and port number where its thread-B
-     * will receive
-     * multicast messages (thread-B has to be operational before sending the message
-     * to the
-     * coordinator).
-     */
-
-    /*
-     * Participant indicates to the coordinator that it is temporarily going
-     * offline. The coordinator will have to send it messages sent during
-     * disconnection (subject to
-     * temporal constraint). Thread-B will relinquish the port and may become
-     * dormant or die.
-     */
-
-    /*
-     * Participant indicates to the coordinator that it is no longer belongs
-     * to the multicast group. Please note that this is different than being
-     * disconnected. A participant
-     * that deregisters, may register again. But it will not get any messages that
-     * were sent since its
-     * deregistration (i.e., it will be treated as a new entrant). Thread-B will
-     * relinquish the port and
-     * may become dormant or die.
-     */
-
-    /*
-     * Participant has to register with the coordinator
-     * specifying its ID, IP address and port number where its thread-B will receive
-     * multicast messages
-     * (thread-B has to be operational before sending the message to the
-     * coordinator). Upon
-     * successful registration, the participant is a member of the multicast group
-     * and will begin
-     * receiving messages.
-     */
     public static void main(String[] args) {
-        // gets PP3-participant-conf.txt - extract each line and assign vals to declared
+        // gets PP3-participant-conf.txt... extract each line and assign vals to declared
         // attributes
         Path participantDescriptionFile = Paths.get(args[0]);
         try {
