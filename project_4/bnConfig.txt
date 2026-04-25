@@ -1,0 +1,6 @@
+0
+5001
+100 apple
+300 cherry
+600 grape
+900 mango
